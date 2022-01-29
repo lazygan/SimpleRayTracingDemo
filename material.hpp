@@ -3,7 +3,7 @@
 #define M_PI 3.1415926535
 struct Material{
     Vec e; 
-	Material(Vec e = Vec(0,0,0),Vec ks = Vec(1,1,1)) : e(e) {}
+	Material(Vec e = Vec(0,0,0)) : e(e) {}
 	virtual float pdf(const Vec &wi, const Vec &wo, const Vec &n) {return 1;}
 	virtual Vec sample(const Vec &wo, const Vec &n)  {return Vec();}
 	virtual Vec eval(const Vec &wi, const Vec &wo, const Vec &n) {return Vec();}
@@ -79,8 +79,5 @@ struct Refraction : Material {
 	float ior;
 	Vec Ks;
 	Refraction(float ior = 1.5,Vec Ks = Vec(1,1,1)) : Ks(Ks),ior(ior),Material(){ }
-	float pdf(const Vec &wi, const Vec &wo, const Vec &n) override { return 1; }
-	Vec refract(const Vec &wi, const Vec &n) override { 
-		return  calc_refract(wi,n,ior);
-	}
+	Vec refract(const Vec &wi, const Vec &n) override { return  calc_refract(wi,n,ior); }
 };

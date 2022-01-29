@@ -1,6 +1,7 @@
 #include "OBJ_Loader.hpp"
 #include "utils.hpp"
 #include "material.hpp"
+#include <set>
 using namespace std;
 
 struct Ray {
@@ -40,38 +41,15 @@ struct Intersection {
 	Vec x, n;
 	Object* obj = nullptr;
 };
-namespace Lights{
-	vector<Object*> light_objs;
-	void regist_lights(Object* obj){ light_objs.push_back(obj);}
-};
 struct Object {
 	Bounds b;
 	Material* m;
 	float area;
-	Object(Material *m): m(m){
-		if(m->e.l2_norm() > 0)
-			Lights::regist_lights(this); 
-	}
+	Object(Material *m): m(m){}
 	virtual Intersection intersect(const Ray& r) { return Intersection(); }
 	virtual Bounds bounds() { return b; }
 	virtual void sample(Intersection &pos, float &pdf){};
-};
-namespace Lights{
-	void sample_on_lights(Intersection &pos, float &pdf){ 
-		float emit_area_sum = 0;
-		for (uint32_t k = 0; k < light_objs.size(); ++k) {
-				emit_area_sum += light_objs[k]->area;
-		}
-		float p = uniform_rand() * emit_area_sum;
-		emit_area_sum = 0;
-		for (uint32_t k = 0; k < light_objs.size(); ++k) {
-			emit_area_sum += light_objs[k]->area;
-			if (p <= emit_area_sum){
-				light_objs[k]->sample(pos, pdf);
-				break;
-			}
-		}
-	}
+	virtual ~Object(){}
 };
 struct BVHBuildNode {
 	Bounds bounds;
@@ -129,10 +107,37 @@ struct BVHAccel {
 		if (!node->left && !node->right) return node->obj->intersect(ray);
 		Intersection hit1 = intersect(node->left, ray);
 		Intersection hit2 = intersect(node->right, ray);
-		if( hit1.t && hit2.t) return hit1.t< hit2.t? hit1 : hit2; 
+		if( hit1.t && hit2.t){ return hit1.t< hit2.t? hit1 : hit2; } 
 		else if(hit1.t) return hit1; 
 		else if(hit2.t) return hit2;
 		return isect;
+	}
+	void destruct(BVHBuildNode* u){
+		if(u == nullptr) return ;
+		destruct(u->left);
+		destruct(u->right);
+		delete u;
+	}
+	~BVHAccel(){ destruct(root); }
+};
+namespace Lights{
+	set<Object*> light_objs;
+	void regist_lights(Object* obj){ light_objs.insert(obj);}
+	void unregist_lights(Object* obj){ light_objs.erase(obj); }
+	void sample_on_lights(Intersection &pos, float &pdf){ 
+		float emit_area_sum = 0;
+		for (Object* obj : light_objs){
+				emit_area_sum += obj->area;
+		}
+		float p = uniform_rand() * emit_area_sum;
+		emit_area_sum = 0;
+		for (Object* obj : light_objs){
+			emit_area_sum += obj->area;
+			if (p <= emit_area_sum){
+				obj->sample(pos, pdf);
+				break;
+			}
+		}
 	}
 };
 struct Triangle : Object {
@@ -176,16 +181,15 @@ struct MeshTriangle : Object {
 					mesh.Vertices[i + j].Position.Y, mesh.Vertices[i + j].Position.Z);
 				face_vertices[j] =vert * scale + trans ;
 			}
-			triangles.emplace_back(face_vertices[0], 
-				face_vertices[1], face_vertices[2],m);
+			triangles.emplace_back(face_vertices[0], face_vertices[1], face_vertices[2],m);
 		}
 		std::vector<Object*> objs;
-		for (auto& tri : triangles)  objs.push_back(&tri); 
+		for (auto& tri : triangles) objs.push_back(&tri);  
 		for (auto obj : objs) b = b.Union(obj->bounds());
 		bvh = new BVHAccel(objs);
-		Bounds b = bvh->root->bounds;
 	}
 	Intersection intersect(const Ray & r) { return bvh->intersect(bvh->root,r); }
+	~MeshTriangle(){ delete bvh; }
 };
 struct Scene {
 	BVHAccel* bvh = nullptr;
@@ -203,72 +207,90 @@ struct Scene {
 		Vec llu(-ul,ul,ul),lru(-ul,ul,-ul),lrd(-ul,-ul,-ul),lld(-ul,-ul,ul);
 		Vec rlu(ul,ul,ul), rru(ul,ul,-ul), rrd(ul,-ul,-ul), rld(ul,-ul,ul);
 		objs = {
-			new Triangle(lru,llu,lrd, red), new Triangle(lld,lrd,llu, red),//LEFT
-			new Triangle(rru,rrd,rlu, green), new Triangle(rld,rlu,rrd, green),//RIGHT
-			new Triangle(llu,lru,rlu, white), new Triangle(rru,rlu,lru, white),//TOP
-			new Triangle(lld,rld,lrd, white), new Triangle(rrd,lrd,rld, white),//BOTTOM
-			new Triangle(lrd,rrd,lru, white), new Triangle(rru,lru,rrd, white),//BACK
-			new MeshTriangle("./bunny.obj",Vec(0,-60,0), 300.0, glass),
+			new Triangle(lru,llu,lrd, red), new Triangle(lld,lrd,llu, red),//left wall
+			new Triangle(rru,rrd,rlu, green), new Triangle(rld,rlu,rrd, green),//right wall
+			new Triangle(llu,lru,rlu, white), new Triangle(rru,rlu,lru, white),//top wall
+			new Triangle(lld,rld,lrd, white), new Triangle(rrd,lrd,rld, white),//bottom wall
+			new Triangle(lrd,rrd,lru, white), new Triangle(rru,lru,rrd, white),//back wall
+			new MeshTriangle("./bunny.obj",Vec(0,-60,0), 300.0, glass),  
 		};
 		llu.x *= 0.3, llu.z *= 0.3, rlu.x *= 0.3, rlu.z *= 0.3;
 		lru.x *= 0.3, lru.z *= 0.3, rru.x *= 0.3, rru.z *= 0.3;
-		objs.push_back(new Triangle(llu,lru,rlu, light));
-		objs.push_back(new Triangle(rru,rlu,lru, light));
+		objs.push_back(new Triangle(llu,lru,rlu, light)); Lights:: regist_lights(objs.back()); // area light
+		objs.push_back(new Triangle(rru,rlu,lru, light)); Lights:: regist_lights(objs.back());
 		bvh = new BVHAccel(objs); 
 	}
-	Intersection intersect(const Ray &r) { return bvh->intersect(bvh->root,r); }
+	Intersection intersect(const Ray &r) { 
+		return bvh->intersect(bvh->root,r); 
+	}
 	Vec radiance(const Ray &r,Intersection inter = Intersection()) {
 		if(!inter.t) inter = intersect(r);
 		if (!inter.t) return Vec();
 		Material* m= inter.obj->m;
 		Vec x=inter.x, n = inter.n, wo =(r.d * -1).norm();
-		if(m->e.l2_norm() > 0) return m->e; // 发光物直接返回
-		Vec L_dir, L_indir;
 		float pdf_light = 0.0f;
 		Intersection inter_;
-		Lights::sample_on_lights( inter_,pdf_light);
+		Lights::sample_on_lights( inter_,pdf_light); // sampling on the main area light
 		Material* m_= inter_.obj->m;
-		Vec x_ = inter_.x, ws = (x_-x).norm(), n_= inter_.n;
-		if((intersect(Ray(x,ws)).x - x_).l2_norm() < 1e-3)  // 如果没有遮挡,求得直接光照
-			L_dir = m_->e * m->eval(wo,ws,n) * ws.dot(n)*(ws*-1.0).dot(n_) / (((x_-x).l2_norm() * (x_-x).l2_norm()) * pdf_light); 
-		if(uniform_rand() < Scene::RussianRoulette) { // 间接光照,俄罗斯轮盘赌决定是否放弃追踪
-				Vec wi = m->sample(wo,n);
-				Intersection i = intersect(Ray(x,wi));
-				if(i.obj && i.obj->m->e.l2_norm() < 1e-3) // 如果采样到光源, 则返回
-					L_indir = radiance(Ray(x,wi),i) * m->eval(wi,wo,n)*wi.dot(n) / (m->pdf(wi,wo,n)*Scene::RussianRoulette);
-		}
+		Vec x_ = inter_.x, ws = (x_-x).norm(), n_= inter_.n, L;
+		// if there is no occlusion between shading point and sample point,
+		// calculate radiance caused by direction light 
+		if((intersect(Ray(x,ws)).x - x_).l2_norm() < 1e-3) 
+			L = m_->e * m->eval(wo,ws,n) * ws.dot(n)*(ws*-1.0).dot(n_) / (((x_-x).l2_norm() * (x_-x).l2_norm()) * pdf_light); 
+		// when calculate indrectional radiance, use RussianRoulette algorithm to decide whether to stop tracing
+        if(uniform_rand() < Scene::RussianRoulette) { 
+			Vec wi = m->sample(wo,n);
+			Intersection i = intersect(Ray(x,wi));
+			if(Lights::light_objs.count(i.obj) == 0) // return when the ray, which was sampled, hit on main light   
+				L = L + radiance(Ray(x,wi),i) * m->eval(wi,wo,n)*wi.dot(n) / (m->pdf(wi,wo,n)*Scene::RussianRoulette);
+        }
+		// calculate randiance caused by refraction
 		Vec refra_wi = m->refract(wo,n);
 		if(refra_wi != Vec()){
-			if(uniform_rand() < Scene::RussianRoulette) { //折射光计算
-				return L_dir + L_indir + radiance(Ray(x,refra_wi)) / Scene::RussianRoulette;
+			if(uniform_rand() < Scene::RussianRoulette) { 
+				L = L + radiance(Ray(x,refra_wi)) / Scene::RussianRoulette;
 			}
 		} 
-		return L_dir + L_indir;
+		return m->e + L;
+	}
+	~Scene(){
+		for(int i = 0; i < objs.size(); i++) delete objs[i];
+		delete bvh;
 	}
 };
 int main(int argc, char *argv[]) {
 	Scene scene;
-	int w= 1024, h= 760, samps = 4;
+	int w= 1024, h= 700, samps = 4;
 	Ray cam(Vec(0,0,250), Vec(0,0.0,-1).norm());
-	Vec cx=Vec(w*.5135/h), cy=(cx%cam.d).norm()*.5135, r, *c=new Vec[w*h];
+	Vec cx=Vec(w*.5135/h), cy=(cx%cam.d).norm()*.5135, *c=new Vec[w*h];
+	thread_pool tpool; // thread pool
 	for (int y=0; y<h; y++) {
-		fprintf(stderr,"\rRendering (%d spp) %5.2f%%",samps*4,100.*y/(h-1));
 		for (unsigned short x=0; x<w; x++) {
-			for (int sy=0, i=(h-y-1)*w+x; sy<2; sy++)  
-			        for (int sx=0; sx<2; sx++, r=Vec()) {
-				for (int s=0; s<samps; s++) {
-					double r1=2*uniform_rand(), dx=r1<1 ? sqrt(r1)-1: 1-sqrt(2-r1);
-					double r2=2*uniform_rand(), dy=r2<1 ? sqrt(r2)-1: 1-sqrt(2-r2);
-					Vec d = cx*( ( (sx+.5 + dx)/2 + x)/w - .5) +
-					                    cy*( ( (sy+.5 + dy)/2 + y)/h - .5) + cam.d;
-					r = r + scene.radiance(Ray(cam.o+d*140,d.norm())) * (1./samps);
+			auto task =  [=,&scene](){
+				for (int sy=0, i=(h-y-1)*w+x; sy<2; sy++){
+					Vec r;
+					for (int sx=0; sx<2; sx++) {
+						for (int s=0; s<samps; s++) {
+							double r1=2*uniform_rand(), dx=r1<1 ? sqrt(r1)-1: 1-sqrt(2-r1);
+							double r2=2*uniform_rand(), dy=r2<1 ? sqrt(r2)-1: 1-sqrt(2-r2);
+							Vec d = cx*( ( (sx+.5 + dx)/2 + x)/w - .5) + cy*( ( (sy+.5 + dy)/2 + y)/h - .5) + cam.d;
+							r = r + scene.radiance(Ray(cam.o+d*140,d.norm())) * (1./samps);
+						}
+						c[i] = c[i] + Vec(clamp(r.x),clamp(r.y),clamp(r.z))*.25;
+					}
 				}
-				c[i] = c[i] + Vec(clamp(r.x),clamp(r.y),clamp(r.z))*.25;
-			}
+			};
+			tpool.submit(task);
 		}
+	}
+	while(int s = tpool.uncompleted_task_size()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		fprintf(stderr,"\rRendering (%d spp) %5.2f%%",samps*4,100 - 100.* s/(w*h));
 	}
 	FILE *f = fopen("image_.ppm", "w");
 	fprintf(f, "P3\n%d %d\n%d\n", w, h, 255);
 	for (int i=0; i<w*h; i++)
 	    fprintf(f,"%d %d %d ", toInt(c[i].x), toInt(c[i].y), toInt(c[i].z));
+
+	fprintf(stderr,"\rRendering (%d spp) %5.2f%%",samps*4,100.);
 }
